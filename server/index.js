@@ -20,6 +20,7 @@ const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'http://localhost:4173';
 const FRONTEND_ORIGINS = (process.env.FRONTEND_ORIGINS || '').split(',').map((v) => v.trim()).filter(Boolean);
 const SESSION_SECRET = process.env.SESSION_SECRET || 'dev-secret-change-me';
 const SESSION_DAYS = Number(process.env.SESSION_DAYS || 30);
+const REGISTRATION_CODE_TTL_MS = Number(process.env.REGISTRATION_CODE_TTL_MS || 10 * 60 * 1000);
 
 const defaultAllowedOrigins = [FRONTEND_ORIGIN, 'http://localhost:4173', 'http://127.0.0.1:4173', 'http://0.0.0.0:4173'];
 const allowedOrigins = new Set([...defaultAllowedOrigins, ...FRONTEND_ORIGINS]);
@@ -35,6 +36,7 @@ const dataDir = path.join(process.cwd(), 'data');
 const usersPath = path.join(dataDir, 'users.json');
 const chatsPath = path.join(dataDir, 'chats.json');
 const oauthStates = new Map();
+const registrationCodes = new Map();
 
 const createDefaultSettings = (name = 'Вы') => ({
   profile: { nickname: name, status: 'Онлайн', avatar: '😎', language: 'ru' },
@@ -66,6 +68,19 @@ const mergeSettings = (current, incoming) => {
 
 function hashPassword(password) {
   return crypto.createHash('sha256').update(password).digest('hex');
+}
+
+function normalizePhone(phone) {
+  const compact = String(phone || '').trim().replace(/[\s().-]/g, '');
+  return compact.startsWith('00') ? `+${compact.slice(2)}` : compact;
+}
+
+function generateRegistrationCode() {
+  return String(crypto.randomInt(100000, 1000000));
+}
+
+function sendRegistrationCode(phone, code) {
+  console.log(`[REGISTRATION_CODE] ${phone}: ${code}`);
 }
 
 async function ensureStorage() {
@@ -169,9 +184,9 @@ const consumeOauthState = (stateParam) => {
 app.get('/api/meta', (_req, res) => {
   res.json({
     service: 'nulls-messenger-auth-api',
-    version: '2.0',
+    version: '2.1',
     endpoints: [
-      'POST /auth/register', 'POST /auth/login', 'GET /auth/providers/status',
+      'POST /auth/register/request-code', 'POST /auth/register/confirm', 'POST /auth/login', 'GET /auth/providers/status',
       'GET /settings', 'PUT /settings', 'GET /security/sessions', 'POST /security/sessions/refresh',
       'POST /chats/by-phone', 'GET /chats', 'GET /chats/:chatId/messages?limit&before', 'GET /chats/:chatId/stats', 'POST /chats/:chatId/messages',
     ],
@@ -184,30 +199,85 @@ app.get('/auth/providers/status', (_req, res) => {
   });
 });
 
-app.post('/auth/register', async (req, res) => {
+app.post('/auth/register/request-code', async (req, res) => {
   const { username, phone, email, password } = req.body || {};
   if (!username || !phone || !password) return res.status(400).json({ error: 'username, phone, password required' });
+  if (String(password).length < 6) return res.status(400).json({ error: 'password_min_6' });
+
+  const normalizedPhone = normalizePhone(phone);
+  const users = await readUsers();
+  if (users.some((u) => normalizePhone(u.phone) === normalizedPhone)) return res.status(409).json({ error: 'phone already registered' });
+  if (email && users.some((u) => u.email === email)) return res.status(409).json({ error: 'email already registered' });
+
+  const code = generateRegistrationCode();
+  registrationCodes.set(normalizedPhone, {
+    code,
+    attemptsLeft: 5,
+    expiresAt: Date.now() + REGISTRATION_CODE_TTL_MS,
+    payload: {
+      username: String(username).trim(),
+      phone: normalizedPhone,
+      email: String(email || '').trim(),
+      passwordHash: hashPassword(password),
+    },
+  });
+  sendRegistrationCode(normalizedPhone, code);
+
+  return res.status(202).json({
+    ok: true,
+    phone: normalizedPhone,
+    expiresInSeconds: Math.round(REGISTRATION_CODE_TTL_MS / 1000),
+    delivery: 'dev_console',
+    devCode: code,
+    message: 'Registration code generated. In local development it is returned as devCode and printed in the server console.',
+  });
+});
+
+app.post('/auth/register/confirm', async (req, res) => {
+  const phone = normalizePhone(req.body?.phone);
+  const code = String(req.body?.code || '').trim();
+  if (!phone || !code) return res.status(400).json({ error: 'phone and code required' });
+
+  const pending = registrationCodes.get(phone);
+  if (!pending) return res.status(404).json({ error: 'registration_code_not_found' });
+  if (Date.now() > pending.expiresAt) {
+    registrationCodes.delete(phone);
+    return res.status(410).json({ error: 'registration_code_expired' });
+  }
+  if (pending.code !== code) {
+    pending.attemptsLeft -= 1;
+    if (pending.attemptsLeft <= 0) registrationCodes.delete(phone);
+    return res.status(401).json({ error: 'invalid_registration_code', attemptsLeft: Math.max(pending.attemptsLeft, 0) });
+  }
 
   const users = await readUsers();
-  if (users.some((u) => u.phone === phone)) return res.status(409).json({ error: 'phone already registered' });
-  if (email && users.some((u) => u.email === email)) return res.status(409).json({ error: 'email already registered' });
+  if (users.some((u) => normalizePhone(u.phone) === phone)) {
+    registrationCodes.delete(phone);
+    return res.status(409).json({ error: 'phone already registered' });
+  }
 
   const user = {
     id: crypto.randomUUID(),
-    username,
-    name: username,
+    username: pending.payload.username,
+    name: pending.payload.username,
     phone,
-    email: email || '',
-    passwordHash: hashPassword(password),
+    email: pending.payload.email,
+    passwordHash: pending.payload.passwordHash,
     verified: true,
+    phoneVerifiedAt: Date.now(),
     provider: 'Local',
-    settings: createDefaultSettings(username),
+    settings: createDefaultSettings(pending.payload.username),
   };
   users.push(user);
   await writeUsers(users);
+  registrationCodes.delete(phone);
 
   setSessionCookie(res, user.id);
   return res.json({ user: publicUser(user) });
+});
+
+app.post('/auth/register', (_req, res) => {
+  res.status(409).json({ error: 'registration_requires_code', next: ['/auth/register/request-code', '/auth/register/confirm'] });
 });
 
 app.post('/auth/login', async (req, res) => {
@@ -215,7 +285,8 @@ app.post('/auth/login', async (req, res) => {
   if (!password) return res.status(400).json({ error: 'password required' });
 
   const users = await readUsers();
-  const user = users.find((u) => (phone && u.phone === phone) || (email && u.email === email) || (username && u.username === username));
+  const normalizedPhone = normalizePhone(phone);
+  const user = users.find((u) => (normalizedPhone && normalizePhone(u.phone) === normalizedPhone) || (email && u.email === email) || (username && u.username === username));
   if (!user || user.passwordHash !== hashPassword(password)) return res.status(401).json({ error: 'invalid_credentials' });
   if (!user.verified) return res.status(403).json({ error: 'user_not_verified' });
 
@@ -320,11 +391,11 @@ app.post('/auth/logout', (req, res) => {
 });
 
 app.post('/chats/by-phone', requireAuth, async (req, res) => {
-  const phone = String(req.body?.phone || '');
+  const phone = normalizePhone(req.body?.phone);
   if (!phone) return res.status(400).json({ error: 'phone required' });
 
   const users = await readUsers();
-  const other = users.find((u) => u.phone === phone && u.verified);
+  const other = users.find((u) => normalizePhone(u.phone) === phone && u.verified);
   if (!other) return res.status(404).json({ error: 'user_not_found' });
   if (other.id === req.user.id) return res.status(400).json({ error: 'cannot_chat_with_self' });
 

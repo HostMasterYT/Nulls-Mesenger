@@ -25,10 +25,13 @@
             <input id="localPhone" type="text" placeholder="+79991234567" />
             <input id="localPassword" type="password" placeholder="password" />
             <input id="localEmail" type="email" placeholder="email (optional)" />
+            <input id="localCode" type="text" inputmode="numeric" maxlength="6" placeholder="код из SMS / devCode" />
             <div class="auth-actions">
-              <button id="registerBtn" class="small" type="button">Регистрация</button>
+              <button id="registerBtn" class="small" type="button">Получить код</button>
+              <button id="confirmRegisterBtn" class="small" type="button">Подтвердить</button>
               <button id="loginBtn" class="small" type="button">Вход</button>
             </div>
+            <small id="registrationCodeHint" class="provider-status">Регистрация идёт по номеру телефона: сначала получите код, затем подтвердите аккаунт.</small>
           </div>
           <div class="social-grid">
             <button id="facebookLoginBtn" class="social-btn social-btn--facebook" type="button">Facebook Redirect</button>
@@ -38,7 +41,7 @@
           <small id="oauthProviderStatus" class="provider-status">Проверка OAuth-провайдеров...</small>
           <small id="apiMetaStatus" class="provider-status">API metadata: loading...</small>
           <div class="auth-actions"><button id="socialLogoutBtn" class="ghost small" type="button">Выйти</button></div>
-          <small id="authHint">Локальный вход + Facebook OAuth.</small>
+          <small id="authHint">Вход по телефону/password + Facebook OAuth.</small>
         </section>
 
         <label class="search"><span>🔎</span><input type="text" id="chatSearch" placeholder="Поиск..." /></label>

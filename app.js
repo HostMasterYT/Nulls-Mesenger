@@ -34,7 +34,8 @@ const el = [
   'chatEnterToSend','chatAutoMedia','chatStickers','chatReactions','chatSpellcheck',
   'voiceCallBtn','videoCallBtn','showStatsBtn','statsDialog','chatStatsOutput','refreshSessionBtn',
   'callDialog','callTitle','callText','callAvatar','newChatBtn','authState','facebookLoginBtn','socialLogoutBtn',
-  'sendBtn','cancelBtn','localUsername','localPhone','localPassword','registerBtn','loginBtn','localEmail','oauthProviderStatus','apiMetaStatus','authHint','fbStatus'
+  'sendBtn','cancelBtn','localUsername','localPhone','localPassword','localCode','registerBtn','confirmRegisterBtn','loginBtn','localEmail',
+  'registrationCodeHint','oauthProviderStatus','apiMetaStatus','authHint','fbStatus'
 ].reduce((a, k) => (a[k] = $(k), a), {});
 
 const clone = (v) => JSON.parse(JSON.stringify(v));
@@ -142,7 +143,7 @@ function renderAuth() {
   }
   el.authState.textContent = label;
   el.socialLogoutBtn.disabled = !state.user;
-  el.authHint.textContent = 'Локальный вход + Facebook OAuth.';
+  el.authHint.textContent = 'Аккаунт создаётся по телефону: получите 6-значный код, подтвердите его и общайтесь с друзьями по номеру.';
 }
 
 function renderProviderStatus() {
@@ -285,12 +286,29 @@ async function saveSettings() {
   }
 }
 
-async function registerLocal() {
+async function requestRegistrationCode() {
   const payload = { username: el.localUsername.value.trim(), phone: el.localPhone.value.trim(), email: el.localEmail.value.trim(), password: el.localPassword.value.trim() };
   if (!payload.username || !payload.phone || !payload.password) return toast('Заполни username, phone, password');
-  const data = await api('/auth/register', { method: 'POST', body: JSON.stringify(payload) });
+  const data = await api('/auth/register/request-code', { method: 'POST', body: JSON.stringify(payload) });
+  el.localPhone.value = data.phone || payload.phone;
+  if (data.devCode) {
+    el.localCode.value = data.devCode;
+    el.registrationCodeHint.textContent = `Код регистрации: ${data.devCode}. Для продакшена подключите SMS-провайдера, сейчас код также напечатан в консоли backend.`;
+  } else {
+    el.registrationCodeHint.textContent = `Код отправлен на ${data.phone}. Срок действия: ${data.expiresInSeconds || 600} сек.`;
+  }
+  el.localCode.focus();
+  toast('Код регистрации создан');
+}
+
+async function confirmRegistrationCode() {
+  const payload = { phone: el.localPhone.value.trim(), code: el.localCode.value.trim() };
+  if (!payload.phone || !payload.code) return toast('Введите phone и код регистрации');
+  const data = await api('/auth/register/confirm', { method: 'POST', body: JSON.stringify(payload) });
   state.user = data.user;
   state.settings = mergeSettings(defaultSettings, data.user?.settings || {});
+  el.localCode.value = '';
+  el.registrationCodeHint.textContent = 'Телефон подтверждён. Теперь можно входить по номеру и писать друзьям.';
   await loadChats();
   renderAll();
 }
@@ -443,7 +461,8 @@ el.settingsForm.addEventListener('submit', (e) => { e.preventDefault(); saveSett
 el.cancelBtn.addEventListener('click', (e) => { e.preventDefault(); el.settingsDialog.close(); });
 el.refreshSessionBtn.addEventListener('click', () => refreshSession().catch((e) => toast(e.message)));
 
-el.registerBtn.addEventListener('click', () => registerLocal().catch((e) => toast(e.message)));
+el.registerBtn.addEventListener('click', () => requestRegistrationCode().catch((e) => toast(e.message)));
+el.confirmRegisterBtn.addEventListener('click', () => confirmRegistrationCode().catch((e) => toast(e.message)));
 el.loginBtn.addEventListener('click', () => loginLocal().catch((e) => toast(e.message)));
 el.socialLogoutBtn.addEventListener('click', async () => {
   try { await api('/auth/logout', { method: 'POST' }); } catch {}
